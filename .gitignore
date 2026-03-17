@@ -1,0 +1,33 @@
+# Environment variables
+.env
+
+# Temporary files and data
+.tmp/
+*.json
+!CLAUDE.md
+
+# Personal documents
+cv/
+emails/
+*.xlsx
+*.pdf
+*.docx
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+.project
+.pydevproject
+
+# OS
+.DS_Store
+Thumbs.db
