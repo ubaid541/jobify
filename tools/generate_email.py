@@ -91,16 +91,32 @@ The body should be the full email text starting with "Hi [First Name]," and endi
 """
 
     model = _gemini()
-    try:
-        response = model.generate_content(prompt)
-        content = response.text.strip().lstrip('```json').lstrip('```').rstrip('```').strip()
-        result = json.loads(content)
-        subject = result['subject']
-        body    = result['body']
-    except Exception as e:
-        print(f"    [!!] Gemini error generating email: {e}")
-        subject = f"React.js Developer — {company.get('company_name')}"
-        body    = "[Email generation failed — please fill manually]"
+    import time
+    from google.api_core.exceptions import ResourceExhausted
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(prompt)
+            content = response.text.strip().lstrip('```json').lstrip('```').rstrip('```').strip()
+            result = json.loads(content)
+            subject = result['subject']
+            body    = result['body']
+            break
+        except ResourceExhausted as e:
+            if attempt < max_retries - 1:
+                wait_time = 30 * (attempt + 1)
+                print(f"    [!!] Rate limit (429) hit. Pausing {wait_time}s and retrying ({attempt+1}/{max_retries})...")
+                time.sleep(wait_time)
+            else:
+                print(f"    [!!] Gemini rate limit exceeded after {max_retries} retries.")
+                subject = f"React.js Developer — {company.get('company_name')}"
+                body    = "[Email generation failed — please fill manually]"
+        except Exception as e:
+            print(f"    [!!] Gemini error generating email: {e}")
+            subject = f"React.js Developer — {company.get('company_name')}"
+            body    = "[Email generation failed — please fill manually]"
+            break
 
     name  = company.get('company_name', '')
     slug  = _slug(name)

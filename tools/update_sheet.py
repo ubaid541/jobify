@@ -221,6 +221,69 @@ def update_row_status(row_index: int, status: str, sent_at: str = None):
     ).execute()
 
 
+def find_failed_drafts():
+    """
+    Returns list of rows where Status='Draft' and Email Body contains '[Email generation failed'.
+    """
+    service = _get_service()
+    sheet_id = _get_sheet_id()
+
+    result = service.spreadsheets().values().get(
+        spreadsheetId=sheet_id,
+        range=f'{SHEET_TAB}!A:M'
+    ).execute()
+    rows = result.get('values', [])
+    if len(rows) < 2:
+        return []
+
+    failed = []
+    for i, row in enumerate(rows[1:], start=2):
+        while len(row) < TOTAL_COLS:
+            row.append('')
+        
+        status = row[COL['status']].strip()
+        body   = row[COL['email_body']].strip()
+        
+        if status == 'Draft' and '[Email generation failed' in body:
+            failed.append({
+                'row_index':     i,
+                'company_name':  row[COL['company_name']],
+                'contact_name':  row[COL['contact_name']],
+                'contact_title': row[COL['contact_title']],
+                'contact_email': row[COL['contact_email']],
+                'website':       row[COL['website']],
+                'linkedin':      row[COL['linkedin']],
+                'fit_score':     row[COL['fit_score']],
+                'approved':      row[COL['approved']].strip().lower()
+            })
+    return failed
+
+
+def update_row_draft(row_index: int, subject: str, body: str):
+    """
+    Overwrites the Subject and Email Body cells.
+    row_index is 1-based.
+    """
+    service = _get_service()
+    sheet_id = _get_sheet_id()
+
+    updates = [
+        {
+            'range': f'{SHEET_TAB}!I{row_index}',  # Subject (Col 8, I)
+            'values': [[subject]]
+        },
+        {
+            'range': f'{SHEET_TAB}!J{row_index}',  # Email Body (Col 9, J)
+            'values': [[body]]
+        }
+    ]
+
+    service.spreadsheets().values().batchUpdate(
+        spreadsheetId=sheet_id,
+        body={'valueInputOption': 'RAW', 'data': updates}
+    ).execute()
+
+
 def get_todays_sent_count():
     """Counts rows where Status=Sent and Sent At matches today's date."""
     service = _get_service()

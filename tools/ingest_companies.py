@@ -115,36 +115,64 @@ def _get_sheet_data(sheet_id: str) -> list[dict]:
     
     return data
 
-def ingest(sheet_url_or_id: str) -> list:
-    sheet_id = _extract_sheet_id(sheet_url_or_id)
-    print(f"  Reading from Google Sheet: {sheet_id}...")
-
+def ingest(url_or_id: str, companies_per_run: int = 5):
+    """
+    1. Fetches data from source Google Sheet.
+    2. Deduplicates companies within the sheet.
+    3. Filters out companies already in processed_companies.json.
+    4. Scores them and takes the top N.
+    """
+    print(f"\n[Step 1/4] Ingesting companies from source sheet...")
+    sheet_id = _extract_sheet_id(url_or_id)
     df_dicts = _get_sheet_data(sheet_id)
-    processed = _load_json(PROCESSED_PATH)
-    patterns  = _load_json(PATTERNS_PATH)
+    
+    if not df_dicts:
+        print("[!!] No data found in the source sheet.")
+        sys.exit(1)
 
-    # Set of already-processed company names (case-insensitive)
-    processed_names = {c['company_name'].lower() for c in processed}
+    # Load processed companies (by slug)
+    processed = []
+    if os.path.exists(PROCESSED_PATH):
+        try:
+            with open(PROCESSED_PATH) as f:
+                processed = json.load(f)
+        except:
+            processed = []
+    
+    processed_slugs = { _slug(c['company_name']) for c in processed if 'company_name' in c }
 
-    companies_per_run = int(os.getenv('COMPANIES_PER_RUN', 5))
+    patterns = {}
+    if os.path.exists(PATTERNS_PATH):
+        with open(PATTERNS_PATH) as f:
+            patterns = json.load(f)
 
     candidates = []
+    seen_in_this_sheet = set()
     skipped_exists = 0
     skipped_no_email = 0
+    skipped_duplicate = 0
 
     for row in df_dicts:
-        name = str(row.get('Company Name', '')).strip()
+        name = str(row.get('Company', row.get('Company Name', ''))).strip()
         if not name or name.lower() == 'nan':
             continue
 
-        # Skip if already applied (main dedup guard)
-        if name.lower() in processed_names:
+        slug = _slug(name)
+        
+        # 1. Skip if already processed in history
+        if slug in processed_slugs:
             skipped_exists += 1
             continue
 
-        # Skip if no contact email — can't apply without one
+        # 2. Skip if duplicate within this specific sheet export
+        if slug in seen_in_this_sheet:
+            skipped_duplicate += 1
+            continue
+        seen_in_this_sheet.add(slug)
+
+        # 3. Skip if no email
         contact_email = str(row.get('Email', '')).strip()
-        if not contact_email or contact_email.lower() == 'nan':
+        if not contact_email or contact_email.lower() == 'nan' or '@' not in contact_email:
             skipped_no_email += 1
             continue
 
@@ -187,6 +215,7 @@ def ingest(sheet_url_or_id: str) -> list:
     print(f"\n[OK] Ingested {len(batch)} companies (score >=6) out of {len(df_dicts)} rows.")
     print(f"  Skipped (already in processed_companies.json): {skipped_exists}")
     print(f"  Skipped (no contact email): {skipped_no_email}")
+    print(f"  Skipped (duplicate in sheet): {skipped_duplicate}")
     for c in batch:
         print(f"  [{c['fit_score']}/10] {c['company_name']} ({c['country']})")
 

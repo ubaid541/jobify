@@ -63,12 +63,14 @@ def _gemini():
     genai.configure(api_key=api_key)
     return genai.GenerativeModel('gemini-2.5-flash')
 
-
 def research(company: dict) -> dict | None:
     """
     Visits website (and LinkedIn if available), extracts research brief.
     Returns dict or None if website is unreachable.
     """
+    import time
+    from google.api_core.exceptions import ResourceExhausted
+
     name    = company['company_name']
     slug    = _slug(name)
     website = company.get('website', '').strip()
@@ -121,19 +123,31 @@ Company website + LinkedIn:
 Return ONLY valid JSON.
 """
 
-    try:
-        response = model.generate_content(prompt)
-        content = response.text.strip().lstrip('```json').lstrip('```').rstrip('```').strip()
-        brief = json.loads(content)
-    except Exception as e:
-        print(f"    [!!] Gemini parse error: {e}")
-        brief = {
-            "what_they_do":  "Could not extract.",
-            "main_product":  "N/A",
-            "frontend_tech": [],
-            "company_type":  "unknown",
-            "recent_hook":   ""
-        }
+    brief = {
+        "what_they_do":  "Could not extract.",
+        "main_product":  "N/A",
+        "frontend_tech": [],
+        "company_type":  "unknown",
+        "recent_hook":   ""
+    }
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(prompt)
+            content = response.text.strip().lstrip('```json').lstrip('```').rstrip('```').strip()
+            brief = json.loads(content)
+            break
+        except ResourceExhausted as e:
+            if attempt < max_retries - 1:
+                wait_time = 30 * (attempt + 1)
+                print(f"    [!!] Rate limit (429) hit. Pausing {wait_time}s and retrying ({attempt+1}/{max_retries})...")
+                time.sleep(wait_time)
+            else:
+                print(f"    [!!] Gemini rate limit exceeded after {max_retries} retries.")
+        except Exception as e:
+            print(f"    [!!] Gemini parse error: {e}")
+            break
 
     brief['company_name'] = name
     brief['website']      = website

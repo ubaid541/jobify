@@ -47,8 +47,10 @@ def _print_status(rows, sent_today, max_per_day):
 
 
 def watch():
-    from tools.update_sheet import read_approvals, update_row_status, get_todays_sent_count, get_all_rows
+    from tools.update_sheet import read_approvals, update_row_status, get_todays_sent_count, get_all_rows, find_failed_drafts, update_row_draft
     from tools.send_email import send
+    from tools.research_company import research
+    from tools.generate_email import generate
 
     poll_interval = int(os.getenv('POLL_INTERVAL_SECONDS', 120))
     max_per_day   = int(os.getenv('MAX_EMAILS_PER_DAY', 5))
@@ -73,6 +75,20 @@ def watch():
                 print("Watching will resume automatically tomorrow.")
                 print("Exiting watcher. Run python approve.py tomorrow to continue.")
                 break
+
+            # JIT Regeneration for failed drafts
+            failed_drafts = find_failed_drafts()
+            if failed_drafts:
+                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Found {len(failed_drafts)} draft(s) with previous generation errors. Attempting to regenerate...")
+                for fd in failed_drafts:
+                    print(f"  Regenerating email for {fd['company_name']}...")
+                    brief = research(fd)
+                    if brief:
+                        new_draft = generate(fd, brief)
+                        update_row_draft(fd['row_index'], new_draft['subject'], new_draft['body'])
+                        print(f"    [OK] Regenerated and updated sheet for {fd['company_name']}")
+                    else:
+                        print(f"    [!!] Retrying research failed for {fd['company_name']}")
 
             all_rows  = get_all_rows()
             pending_approvals = read_approvals()  # Only Yes/No where Status=Draft
@@ -108,6 +124,13 @@ def watch():
 
                     with open(draft_path) as f:
                         draft = json.load(f)
+
+                    # Validation: Block sending if it contains an error message instead of a draft
+                    if "[Email generation failed" in draft.get('body', ''):
+                        print(f"  [!!] Blocked {company_name}: Draft contains error message. Please fix in sheet manually.")
+                        update_row_status(row_index, 'Failed')
+                        failed_count += 1
+                        continue
 
                     draft['approved'] = True  # Set only after reading Yes from sheet
 
