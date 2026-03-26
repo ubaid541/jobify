@@ -14,6 +14,7 @@ import json
 import sys
 import pandas as pd
 from dotenv import load_dotenv
+from tools.utils import get_slug
 
 load_dotenv()
 
@@ -29,8 +30,7 @@ def _load_json(path):
     return [] if path == PROCESSED_PATH else {}
 
 
-def _slug(name: str) -> str:
-    return name.lower().strip().replace(' ', '_').replace('/', '_')
+# Removed local _slug, using get_slug from utils
 
 
 def score_company(row: dict, patterns: dict) -> int:
@@ -99,12 +99,10 @@ def _get_sheet_data(sheet_id: str) -> list[dict]:
         values = result.get('values', [])
     except Exception as e:
         print(f"\n[!!] Failed to read Google Sheet: {e}")
-        print("Ensure the Sheet URL is correct and shared with the authenticated account.")
-        sys.exit(1)
+        raise Exception(f"Failed to read Google Sheet: {e}. Ensure the Sheet URL is correct and shared with the service account.")
 
     if not values or len(values) < 2:
-        print("\n[!!] Google Sheet is empty or missing headers.")
-        sys.exit(1)
+        raise Exception("Google Sheet is empty or missing headers.")
 
     headers = [str(h).strip() for h in values[0]]
     data = []
@@ -139,7 +137,7 @@ def ingest(url_or_id: str, companies_per_run: int = 5):
         except:
             processed = []
     
-    processed_slugs = { _slug(c['company_name']) for c in processed if 'company_name' in c }
+    processed_slugs = { get_slug(c['company_name']) for c in processed if 'company_name' in c }
 
     patterns = {}
     if os.path.exists(PATTERNS_PATH):
@@ -157,7 +155,7 @@ def ingest(url_or_id: str, companies_per_run: int = 5):
         if not name or name.lower() == 'nan':
             continue
 
-        slug = _slug(name)
+        slug = get_slug(name)
         
         # 1. Skip if already processed in history
         if slug in processed_slugs:
@@ -174,6 +172,12 @@ def ingest(url_or_id: str, companies_per_run: int = 5):
         contact_email = str(row.get('Email', '')).strip()
         if not contact_email or contact_email.lower() == 'nan' or '@' not in contact_email:
             skipped_no_email += 1
+            continue
+
+        # 4. Skip if already has a Status or Approved value in the sheet (prevents re-ingesting own output)
+        status = str(row.get('Status', '')).strip().lower()
+        approved = str(row.get('Approved', '')).strip().lower()
+        if status not in ('', 'nan') or approved not in ('', 'nan', 'pending'):
             continue
 
         fit_score = score_company(row, patterns)

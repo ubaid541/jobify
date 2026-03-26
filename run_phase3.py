@@ -66,104 +66,176 @@ def check_incomplete_batch():
     return ans == 'y'
 
 
-def run_phase3(sheet_url_or_id: str, dry_run: bool = False):
-    print("\n" + "=" * 44)
-    print("  Jobify — Phase 3")
-    print("=" * 44)
+from typing import Optional
+from tools.utils import get_slug
 
-    check_prerequisites(dry_run=dry_run)
+def run_phase3_logic(sheet_url_or_id: str, dry_run: bool = False, thread_ts: Optional[str] = None, channel_id: Optional[str] = None):
+    """
+    Core logic for processing companies. 
+    If thread_ts is provided, updates are sent to Slack.
+    """
+    from tools.slack_client import slack_client
+    
+    # Use provided channel or fallback to .env
+    target_channel = channel_id or os.getenv("SLACK_CHANNEL_ID")
 
-    sheet_id = os.getenv('GOOGLE_SHEET_ID', '')
-    companies_per_run = int(os.getenv('COMPANIES_PER_RUN', 5))
+    def notify(text, blocks=None):
+        if thread_ts and target_channel:
+            try:
+                if blocks:
+                    slack_client.client.chat_postMessage(channel=target_channel, text=text, blocks=blocks, thread_ts=thread_ts)
+                else:
+                    slack_client.client.chat_postMessage(channel=target_channel, text=text, thread_ts=thread_ts)
+            except Exception as e:
+                print(f"Failed to send Slack message: {e}")
+        try:
+            print(text)
+        except UnicodeEncodeError:
+            # Fallback for Windows terminals without UTF-8 support
+            print(text.encode('ascii', 'ignore').decode('ascii'))
 
-    # Step 1: Check for resume
-    if check_incomplete_batch():
-        print("Resuming existing batch — skipping ingestion.")
-        with open(BATCH_PATH) as f:
-            batch = json.load(f)
-    else:
-        # Step 2: Ingest new companies from Google Sheet
-        print(f"\n[Step 1/4] Ingesting companies from source sheet...")
+    try:
+        notify("🔍 Starting Jobify process...")
+        check_prerequisites(dry_run=dry_run)
+
+        sheet_id = os.getenv('GOOGLE_SHEET_ID', '')
+        companies_per_day = int(os.getenv('COMPANIES_PER_DAY', 10))
+
+        # Step 1: Ingest new companies
+        notify("📥 Ingesting companies from source sheet...")
         if dry_run:
-            print("  DRY RUN — skipping API calls. Using mock batch.")
             batch = [{"company_name": "DryRun Corp", "website": "https://example.com",
-                      "linkedin": "", "contact_name": "Test User", "contact_title": "HR",
-                      "contact_email": "test@example.com", "fit_score": 8,
-                      "employees": 100, "country": "Netherlands", "city": "Amsterdam",
-                      "keywords": [], "technologies": []}]
+                      "contact_email": "test@example.com"}]
         else:
             from tools.ingest_companies import ingest
-            batch = ingest(sheet_url_or_id)
+            # Pass a high number to ingest so we get everything, we'll limit it ourselves
+            batch = ingest(sheet_url_or_id, companies_per_run=100)
 
-    if not batch:
-        print("No companies to process. Exiting.")
-        sys.exit(0)
+        if not batch:
+            notify("✅ No new companies to process. Sheet is complete!")
+            return
 
-    from tools.update_sheet import sheet_exists, append_draft_row
+        # Filter out companies already processed (consistent with ingest)
+        processed = _load_json(PROCESSED_PATH, [])
+        processed_slugs = {get_slug(c['company_name']) for c in processed if 'company_name' in c}
+        
+        to_process = [c for c in batch if get_slug(c['company_name']) not in processed_slugs]
+        
+        if not to_process:
+            notify("✅ All companies in this sheet have already been processed.")
+            return
 
-    if not dry_run and not sheet_exists():
-        print("[!!] Google Sheet not accessible. Run setup_google_sheets.py first.")
-        sys.exit(1)
+        # Check daily limit
+        today = datetime.now().strftime("%Y-%m-%d")
+        processed_today_count = sum(1 for c in processed if c.get('processed_at', '').startswith(today))
+        
+        remaining_today = companies_per_day - processed_today_count
+        if remaining_today <= 0:
+            notify(f"⚠️ Daily limit of {companies_per_day} reached. I'll continue tomorrow!")
+            return
 
-    print(f"\n[Step 2/4] Researching {len(batch)} companies and generating emails...")
-    successful = []
+        chunk = to_process[:remaining_today]
+        notify(f"🚀 Found {len(to_process)} new companies. Processing a batch of {len(chunk)} today.")
 
-    for i, company in enumerate(batch, 1):
-        name = company['company_name']
-        print(f"\n  [{i}/{len(batch)}] {name}")
-
-        if dry_run:
-            print("    DRY RUN — skipping research and generation.")
-            successful.append(company)
-            continue
-
-        # Research
+        from tools.update_sheet import append_draft_row
         from tools.research_company import research
-        brief = research(company)
-        if brief is None:
-            print(f"    [SKIP] Research failed for {name}.")
-            continue
-
-        # Generate email
         from tools.generate_email import generate
-        draft = generate(company, brief)
-        if not draft:
-            print(f"    [SKIP] Email generation failed for {name}.")
-            continue
 
-        # Append to Google Sheet
-        print(f"    Adding to Google Sheet...")
-        append_draft_row(company, draft)
-        successful.append(company)
+        for i, company in enumerate(chunk, 1):
+            name = company['company_name']
+            notify(f"🔄 [{i}/{len(chunk)}] Researching *{name}*...")
+            
+            # Research
+            try:
+                brief = research(company)
+                if brief is None:
+                    notify(f"❌ Research failed for {name}. Skipping.")
+                    continue
+            except Exception as e:
+                notify(f"❌ Error during research for {name}: {str(e)}")
+                continue
 
-    if not successful:
-        print("\nNo companies successfully processed. Check .tmp/failed_urls.json.")
-        sys.exit(1)
+            notify(f"✍️ Generating email draft for *{name}*...")
 
-    print(f"\n[Step 3/4] {len(successful)} draft(s) added to Google Sheet.")
+            # Generate email with retry if it fails or has error message
+            try:
+                draft = generate(company, brief)
+                
+                # Check for common error strings in the draft body
+                error_indicators = ["[Email generation failed", "please fill manually", "error generating email"]
+                if not draft or any(indicator in draft.get('body', '') for indicator in error_indicators):
+                    notify(f"⚠️ Draft for {name} had an error. Retrying generation...")
+                    draft = generate(company, brief) # Simple one-time retry
+                
+                if not draft or any(indicator in draft.get('body', '') for indicator in error_indicators):
+                    notify(f"❌ Email generation failed for {name} after retry. Manual intervention needed in the Google Sheet.")
+                    # Still save the company as processed but mark it as needing manual fix
+                    company['manual_review_needed'] = True
+                else:
+                    # Append to Google Sheet only if draft is good
+                    row_index = None
+                    if not dry_run:
+                        row_index = append_draft_row(company, draft)
+                        draft['row_index'] = row_index
+                        # Re-save draft with row_index
+                        from tools.utils import get_slug
+                        slug = get_slug(name)
+                        out_path = os.path.join('.tmp/drafts', f"{slug}.json")
+                        with open(out_path, 'w') as f:
+                            json.dump(draft, f, indent=2)
+            except Exception as e:
+                notify(f"❌ Error during email generation for {name}: {str(e)}")
+                continue
+            
+            # Mark as processed
+            company['processed_at'] = datetime.now().isoformat()
+            processed.append(company)
+            with open(PROCESSED_PATH, 'w') as f:
+                json.dump(processed, f, indent=2)
 
-    # Step 4: Print instructions and watch
-    sheet_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}"
-    print(f"""
-============================================
-{len(successful)} draft(s) added to your Google Sheet.
+            # Send approval buttons
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"✅ Draft ready for *{name}*!\nView it in the Google Sheet or approve here."}
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Approve & Send"},
+                            "style": "primary",
+                            "value": f"approve|{name}",
+                            "action_id": "approve_draft"
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Reject"},
+                            "style": "danger",
+                            "value": f"reject|{name}",
+                            "action_id": "reject_draft"
+                        }
+                    ]
+                }
+            ]
+            notify(f"Draft for {name} is ready!", blocks=blocks)
 
-Open the sheet and set Approved to Yes or No:
-{sheet_url}
+        if len(to_process) <= len(chunk):
+            notify(f"🏆 *Sheet Complete!* All {len(to_process)} new companies have been processed.")
+        else:
+            notify(f"📅 Finished today's batch. {len(to_process) - len(chunk)} companies remaining in the sheet.")
 
-The agent is now watching for your approvals every 2 minutes.
-Daily limit: {int(os.getenv('MAX_EMAILS_PER_DAY', 5))} emails per day.
-Press Ctrl+C to stop watching (run python approve.py later to resume).
-============================================
-""")
+    except Exception as e:
+        error_msg = f"CRITICAL ERROR in Jobify process: {str(e)}"
+        notify(error_msg)
+        import traceback
+        print(traceback.format_exc())
 
-    if dry_run:
-        print("DRY RUN complete. Watcher not started.")
-        return
 
-    print("[Step 4/4] Starting watcher...")
-    from tools.watch_approvals import watch
-    watch()
+def run_phase3(sheet_url_or_id: str, dry_run: bool = False):
+    """CLI wrapper for run_phase3_logic"""
+    run_phase3_logic(sheet_url_or_id, dry_run=dry_run)
 
 
 if __name__ == "__main__":

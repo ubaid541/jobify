@@ -36,8 +36,8 @@ def _save_failed(failures):
         json.dump(failures, f, indent=2)
 
 
-def _slug(name: str) -> str:
-    return re.sub(r'[^a-z0-9_]', '', name.lower().strip().replace(' ', '_').replace('/', '_'))
+from tools.utils import get_slug
+# Removed local _slug, using get_slug from utils
 
 
 def _scrape(url: str) -> str:
@@ -72,7 +72,7 @@ def research(company: dict) -> dict | None:
     from google.api_core.exceptions import ResourceExhausted
 
     name    = company['company_name']
-    slug    = _slug(name)
+    slug    = get_slug(name)
     website = company.get('website', '').strip()
     linkedin = company.get('linkedin', '').strip()
 

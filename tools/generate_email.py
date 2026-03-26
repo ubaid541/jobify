@@ -21,8 +21,8 @@ PROFILE_PATH = '.tmp/profile.json'
 STYLE_PATH   = '.tmp/style.json'
 
 
-def _slug(name: str) -> str:
-    return re.sub(r'[^a-z0-9_]', '', name.lower().strip().replace(' ', '_').replace('/', '_'))
+from tools.utils import get_slug
+# Removed local _slug, using get_slug from utils
 
 
 def _gemini():
@@ -119,7 +119,7 @@ The body should be the full email text starting with "Hi [First Name]," and endi
             break
 
     name  = company.get('company_name', '')
-    slug  = _slug(name)
+    slug  = get_slug(name)
     draft = {
         "company_name":   name,
         "contact_name":   company.get('contact_name', ''),
