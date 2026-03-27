@@ -40,10 +40,11 @@ COLOR_RED    = {"red": 0.97, "green": 0.7, "blue": 0.7}   # Failed
 COLOR_GRAY   = {"red": 0.85, "green": 0.85, "blue": 0.85}  # Skipped
 
 STATUS_COLORS = {
-    'Draft':   COLOR_YELLOW,
-    'Sent':    COLOR_GREEN,
-    'Failed':  COLOR_RED,
-    'Skipped': COLOR_GRAY,
+    'Draft':    COLOR_YELLOW,
+    'Sent':     COLOR_GREEN,
+    'Failed':   COLOR_RED,
+    'Skipped':  COLOR_GRAY,
+    'Rejected': COLOR_GRAY,
 }
 
 
@@ -219,6 +220,10 @@ def update_row_status(row_index: int, status: str, sent_at: str = None):
         spreadsheetId=sheet_id,
         body={'valueInputOption': 'RAW', 'data': updates}
     ).execute()
+    
+    # Color row
+    if status in STATUS_COLORS:
+        _color_row(service, sheet_id, row_index - 1, STATUS_COLORS[status])
 
 
 def find_failed_drafts():

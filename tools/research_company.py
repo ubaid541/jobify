@@ -12,10 +12,11 @@ Or standalone:
 import os
 import json
 import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import re
 import requests
 from bs4 import BeautifulSoup
-import google.generativeai as genai
+from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -56,12 +57,14 @@ def _scrape(url: str) -> str:
         return f"ERROR: {e}"
 
 
-def _gemini():
-    api_key = os.getenv('GEMINI_API_KEY')
+def _openrouter():
+    api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        raise ValueError("GEMINI_API_KEY not set in .env")
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel('gemini-2.5-flash')
+        raise ValueError("OPENROUTER_API_KEY not set in .env")
+    return OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
 
 def research(company: dict) -> dict | None:
     """
@@ -101,7 +104,7 @@ def research(company: dict) -> dict | None:
 
     combined = f"WEBSITE:\n{website_text}\n\nLINKEDIN:\n{linkedin_text}"
 
-    model = _gemini()
+    model = _openrouter()
     profile_str = json.load(open('.tmp/profile.json')) if os.path.exists('.tmp/profile.json') else {}
 
     prompt = f"""
@@ -134,20 +137,25 @@ Return ONLY valid JSON.
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            response = model.generate_content(prompt)
-            content = response.text.strip().lstrip('```json').lstrip('```').rstrip('```').strip()
+            response = model.chat.completions.create(
+                model="stepfun/step-3.5-flash:free",
+                messages=[{"role": "user", "content": prompt}],
+                extra_headers={
+                    "HTTP-Referer": "https://github.com/ubaid541/jobify",
+                    "X-Title": "Jobify",
+                }
+            )
+            content = response.choices[0].message.content.strip().lstrip('```json').lstrip('```').rstrip('```').strip()
             brief = json.loads(content)
             break
-        except ResourceExhausted as e:
-            if attempt < max_retries - 1:
+        except Exception as e:
+            if "429" in str(e) and attempt < max_retries - 1:
                 wait_time = 30 * (attempt + 1)
                 print(f"    [!!] Rate limit (429) hit. Pausing {wait_time}s and retrying ({attempt+1}/{max_retries})...")
                 time.sleep(wait_time)
             else:
-                print(f"    [!!] Gemini rate limit exceeded after {max_retries} retries.")
-        except Exception as e:
-            print(f"    [!!] Gemini parse error: {e}")
-            break
+                print(f"    [!!] OpenRouter error: {e}")
+                break
 
     brief['company_name'] = name
     brief['website']      = website

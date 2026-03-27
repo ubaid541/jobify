@@ -9,9 +9,10 @@ Usage:
 import os
 import json
 import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import re
 from datetime import datetime
-import google.generativeai as genai
+from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,12 +26,14 @@ from tools.utils import get_slug
 # Removed local _slug, using get_slug from utils
 
 
-def _gemini():
-    api_key = os.getenv('GEMINI_API_KEY')
+def _openrouter():
+    api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
-        raise ValueError("GEMINI_API_KEY not set in .env")
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel('gemini-2.5-flash')
+        raise ValueError("OPENROUTER_API_KEY not set in .env")
+    return OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=api_key,
+    )
 
 
 def generate(company: dict, brief: dict) -> dict:
@@ -90,33 +93,36 @@ Return ONLY valid JSON with two keys:
 The body should be the full email text starting with "Hi [First Name]," and ending with the signature.
 """
 
-    model = _gemini()
+    model = _openrouter()
     import time
     from google.api_core.exceptions import ResourceExhausted
 
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            response = model.generate_content(prompt)
-            content = response.text.strip().lstrip('```json').lstrip('```').rstrip('```').strip()
+            response = model.chat.completions.create(
+                model="stepfun/step-3.5-flash:free",
+                messages=[{"role": "user", "content": prompt}],
+                extra_headers={
+                    "HTTP-Referer": "https://github.com/ubaid541/jobify",
+                    "X-Title": "Jobify",
+                }
+            )
+            content = response.choices[0].message.content.strip().lstrip('```json').lstrip('```').rstrip('```').strip()
             result = json.loads(content)
             subject = result['subject']
             body    = result['body']
             break
-        except ResourceExhausted as e:
-            if attempt < max_retries - 1:
+        except Exception as e:
+            if "429" in str(e) and attempt < max_retries - 1:
                 wait_time = 30 * (attempt + 1)
                 print(f"    [!!] Rate limit (429) hit. Pausing {wait_time}s and retrying ({attempt+1}/{max_retries})...")
                 time.sleep(wait_time)
             else:
-                print(f"    [!!] Gemini rate limit exceeded after {max_retries} retries.")
+                print(f"    [!!] OpenRouter error generating email: {e}")
                 subject = f"React.js Developer — {company.get('company_name')}"
                 body    = "[Email generation failed — please fill manually]"
-        except Exception as e:
-            print(f"    [!!] Gemini error generating email: {e}")
-            subject = f"React.js Developer — {company.get('company_name')}"
-            body    = "[Email generation failed — please fill manually]"
-            break
+                break
 
     name  = company.get('company_name', '')
     slug  = get_slug(name)

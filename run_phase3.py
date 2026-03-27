@@ -11,6 +11,7 @@ import sys
 import json
 from datetime import datetime
 from dotenv import load_dotenv
+from tools.utils import get_slug
 
 load_dotenv()
 
@@ -178,7 +179,7 @@ def run_phase3_logic(sheet_url_or_id: str, dry_run: bool = False, thread_ts: Opt
                         row_index = append_draft_row(company, draft)
                         draft['row_index'] = row_index
                         # Re-save draft with row_index
-                        from tools.utils import get_slug
+                        # Re-save draft with row_index
                         slug = get_slug(name)
                         out_path = os.path.join('.tmp/drafts', f"{slug}.json")
                         with open(out_path, 'w') as f:
@@ -206,14 +207,14 @@ def run_phase3_logic(sheet_url_or_id: str, dry_run: bool = False, thread_ts: Opt
                             "type": "button",
                             "text": {"type": "plain_text", "text": "Approve & Send"},
                             "style": "primary",
-                            "value": f"approve|{name}",
+                            "value": f"approve|{name}|{row_index}",
                             "action_id": "approve_draft"
                         },
                         {
                             "type": "button",
                             "text": {"type": "plain_text", "text": "Reject"},
                             "style": "danger",
-                            "value": f"reject|{name}",
+                            "value": f"reject|{name}|{row_index}",
                             "action_id": "reject_draft"
                         }
                     ]

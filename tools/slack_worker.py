@@ -83,15 +83,38 @@ def handle_incoming_message(event, say, logger):
             return
 
         pending_count = 0
+        all_sheet_rows = []
+        try:
+            all_sheet_rows = get_all_rows()
+        except:
+            pass
+
         for filename in os.listdir(drafts_dir):
             if filename.endswith(".json"):
                 try:
-                    with open(os.path.join(drafts_dir, filename)) as f:
+                    draft_file_path = os.path.join(drafts_dir, filename)
+                    with open(draft_file_path) as f:
                         draft = json.load(f)
                     
                     if not draft.get("sent_at") and not draft.get("approved"):
-                        pending_count += 1
                         name = draft["company_name"]
+                        
+                        # --- CROSS-CHECK WITH SHEET ---
+                        skip_status = False
+                        for r in all_sheet_rows:
+                            if r['company_name'] == name:
+                                if r['status'] in ('Sent', 'Rejected', 'Skipped'):
+                                    skip_status = True
+                                    # Also update local JSON to stay in sync
+                                    draft['approved'] = r['status']
+                                    with open(draft_file_path, 'w') as f:
+                                        json.dump(draft, f, indent=2)
+                                    break
+                        if skip_status:
+                            continue
+                        # ------------------------------
+
+                        pending_count += 1
                         blocks = [
                             {
                                 "type": "section",
@@ -104,27 +127,26 @@ def handle_incoming_message(event, say, logger):
                                         "type": "button",
                                         "text": {"type": "plain_text", "text": "Approve & Send"},
                                         "style": "primary",
-                                        "value": f"approve|{name}",
+                                        "value": f"approve|{name}|{draft.get('row_index', '')}",
                                         "action_id": "approve_draft"
                                     },
                                     {
                                         "type": "button",
                                         "text": {"type": "plain_text", "text": "Reject"},
                                         "style": "danger",
-                                        "value": f"reject|{name}",
+                                        "value": f"reject|{name}|{draft.get('row_index', '')}",
                                         "action_id": "reject_draft"
                                     }
                                 ]
                             }
                         ]
-                        say(blocks=blocks, thread_ts=thread_ts)
+                        say(blocks=blocks, text=f"Pending approval for {name}", thread_ts=thread_ts)
                 except:
                     continue
         
         if pending_count == 0:
             say(text="All caught up! No pending approvals found.", thread_ts=thread_ts)
-        else:
-            say(text=f"Sent cards for {pending_count} pending drafts.", thread_ts=thread_ts)
+        say(f"Sent cards for {pending_count} pending drafts.", thread_ts=thread_ts)
 
     elif "process" in text.lower():
         say(text="I saw 'process' but couldn't find a valid Google Sheet URL. Use: `@Jobify process <URL>`", thread_ts=thread_ts)
@@ -133,9 +155,10 @@ def handle_incoming_message(event, say, logger):
 def handle_approve(ack, body, say):
     ack()
     user_id = body["user"]["id"]
-    action_value = body["actions"][0]["value"] # "approve|company_name|contact_email"
+    action_value = body["actions"][0]["value"] # "approve|company_name|row_index"
     parts = action_value.split("|")
     company_name = parts[1]
+    row_index = int(parts[2]) if len(parts) > 2 and parts[2] else None
     
     # Locate the draft file
     from tools.utils import get_slug
@@ -150,7 +173,9 @@ def handle_approve(ack, body, say):
         draft = json.load(f)
     
     # --- SYNC WITH GOOGLE SHEET ---
-    row_index = draft.get('row_index')
+    if not row_index:
+        row_index = draft.get('row_index')
+    
     try:
         service = _get_service()
         sid = _get_sheet_id()
@@ -191,6 +216,11 @@ def handle_approve(ack, body, say):
                 from datetime import datetime
                 sent_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 update_row_status(row_index, 'Sent', sent_at=sent_at)
+                # --- PERSIST STATUS ---
+                draft['sent_at'] = sent_at
+                with open(draft_path, 'w') as f:
+                    json.dump(draft, f, indent=2)
+                # ----------------------
         else:
             say(text=f"❌ Failed to send email to *{company_name}*. Check logs.")
     except Exception as e:
@@ -200,11 +230,45 @@ def handle_approve(ack, body, say):
 def handle_reject(ack, body, say):
     ack()
     user_id = body["user"]["id"]
-    action_value = body["actions"][0]["value"] # "reject|company_name"
-    company_name = action_value.split("|")[1]
+    action_value = body["actions"][0]["value"] # "reject|company_name|row_index"
+    parts = action_value.split("|")
+    company_name = parts[1]
+    row_index = int(parts[2]) if len(parts) > 2 and parts[2] else None
+    
     say(text=f"❌ <@{user_id}> rejected the draft for *{company_name}*.")
+    
+    # --- PERSIST REJECTION ---
+    from tools.utils import get_slug
+    slug = get_slug(company_name)
+    draft_path = os.path.join(".tmp/drafts", f"{slug}.json")
+    if os.path.exists(draft_path):
+        try:
+            with open(draft_path) as f:
+                draft = json.load(f)
+            draft['approved'] = 'Rejected' # Non-false value to hide from approvals
+            with open(draft_path, 'w') as f:
+                json.dump(draft, f, indent=2)
+        except:
+            pass
+    # -------------------------
+    
+    # Update Sheet Status to Rejected
+    try:
+        if not row_index:
+            # Fallback to find row by name
+            all_rows = get_all_rows()
+            for r in all_rows:
+                if r['company_name'] == company_name:
+                    row_index = r['row_index']
+                    break
+        
+        if row_index:
+            update_row_status(row_index, 'Rejected')
+            print(f"  [OK] Sheet row {row_index} marked as Rejected for {company_name}")
+    except Exception as e:
+        print(f"Warning: Could not update status to Rejected in sheet: {e}")
 
 if __name__ == "__main__":
     handler = SocketModeHandler(app, os.getenv("SLACK_APP_TOKEN"))
-    print("⚡️ Jobify Slack Worker is running!")
+    print("Jobify Slack Worker is running!")
     handler.start()
