@@ -82,13 +82,11 @@ def run_phase3_logic(sheet_url_or_id: str, dry_run: bool = False, thread_ts: Opt
 
     def notify(text, blocks=None):
         if thread_ts and target_channel:
-            try:
-                if blocks:
-                    slack_client.client.chat_postMessage(channel=target_channel, text=text, blocks=blocks, thread_ts=thread_ts)
-                else:
-                    slack_client.client.chat_postMessage(channel=target_channel, text=text, thread_ts=thread_ts)
-            except Exception as e:
-                print(f"Failed to send Slack message: {e}")
+            # print(f"DEBUG: sending notification to Slack: {text[:50]}...")
+            if blocks:
+                slack_client.send_blocks(blocks, text=text, thread_ts=thread_ts, channel_id=target_channel)
+            else:
+                slack_client.send_message(text, thread_ts=thread_ts, channel_id=target_channel)
         try:
             print(text)
         except UnicodeEncodeError:
@@ -113,7 +111,7 @@ def run_phase3_logic(sheet_url_or_id: str, dry_run: bool = False, thread_ts: Opt
             batch = ingest(sheet_url_or_id, companies_per_run=100)
 
         if not batch:
-            notify("✅ No new companies to process. Sheet is complete!")
+            notify("No matching companies found in this sheet. Try a new export.")
             return
 
         # Filter out companies already processed (consistent with ingest)

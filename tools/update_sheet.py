@@ -124,13 +124,28 @@ def append_draft_row(company: dict, draft: dict):
     service = _get_service()
     sheet_id = _get_sheet_id()
 
-    # Get current row count to set # column
+    # --- DEDUPLICATION CHECK ---
+    from tools.utils import get_slug
+    new_slug = get_slug(company.get('company_name', ''))
+    
+    result = service.spreadsheets().values().get(
+        spreadsheetId=sheet_id,
+        range=f'{SHEET_TAB}!B:B' # Company Name column
+    ).execute()
+    existing_names = [v[0] for v in result.get('values', []) if v]
+    for i, name in enumerate(existing_names):
+        if get_slug(name) == new_slug:
+            print(f"  [SKIP] {name} already exists in tracker sheet at row {i+1}")
+            return i + 1 # Return existing row index
+    # ---------------------------
+
+    # Get current row count to set # column for new append
     result = service.spreadsheets().values().get(
         spreadsheetId=sheet_id,
         range=f'{SHEET_TAB}!A:A'
     ).execute()
     existing = result.get('values', [])
-    row_num = len(existing)  # Next row number (header = row 1, so data starts at 2)
+    row_num = len(existing)
 
     row = [''] * TOTAL_COLS
     row[COL['#']]             = row_num

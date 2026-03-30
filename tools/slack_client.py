@@ -11,11 +11,11 @@ class SlackClient:
         self.channel_id = os.getenv("SLACK_CHANNEL_ID")
         self.client = WebClient(token=self.token)
 
-    def send_message(self, text, thread_ts=None):
+    def send_message(self, text, thread_ts=None, channel_id=None):
         """Sends a plain text message to the configured channel."""
         try:
             response = self.client.chat_postMessage(
-                channel=self.channel_id,
+                channel=channel_id or self.channel_id,
                 text=text,
                 thread_ts=thread_ts
             )
@@ -24,11 +24,11 @@ class SlackClient:
             print(f"Error sending message: {e}")
             return None
 
-    def send_blocks(self, blocks, text="Notification from Jobify", thread_ts=None):
+    def send_blocks(self, blocks, text="Notification from Jobify", thread_ts=None, channel_id=None):
         """Sends a rich message with blocks (buttons, sections, etc.)."""
         try:
             response = self.client.chat_postMessage(
-                channel=self.channel_id,
+                channel=channel_id or self.channel_id,
                 blocks=blocks,
                 text=text,
                 thread_ts=thread_ts

@@ -138,6 +138,17 @@ def ingest(url_or_id: str, companies_per_run: int = 5):
             processed = []
     
     processed_slugs = { get_slug(c['company_name']) for c in processed if 'company_name' in c }
+    
+    # 1.5 Add slugs from the Tracker Sheet (the target Applications tab)
+    try:
+        from tools.update_sheet import get_all_rows
+        tracker_rows = get_all_rows()
+        for tr in tracker_rows:
+            tslug = get_slug(tr['company_name'])
+            if tslug:
+                processed_slugs.add(tslug)
+    except Exception as e:
+        print(f"  [Notice] Could not read tracker sheet for extra deduplication: {e}")
 
     patterns = {}
     if os.path.exists(PATTERNS_PATH):
@@ -214,7 +225,7 @@ def ingest(url_or_id: str, companies_per_run: int = 5):
 
     if not batch:
         print("No matching companies found in this sheet. Try a new export.")
-        sys.exit(0)
+        return []
 
     print(f"\n[OK] Ingested {len(batch)} companies (score >=6) out of {len(df_dicts)} rows.")
     print(f"  Skipped (already in processed_companies.json): {skipped_exists}")
